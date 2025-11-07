@@ -26,7 +26,7 @@ class FABRIKChain:
         
         self.total_length = sum(self.link_lengths)
         self.tolerance = 0.5
-        self.max_iterations = 10
+        self.max_iterations = 20
         self.current_iterations = 0  # Track actual iterations used
         
         # Interpolation system
