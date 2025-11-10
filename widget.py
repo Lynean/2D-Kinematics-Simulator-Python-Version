@@ -11,6 +11,7 @@ from src.chain import FABRIKChain
 from src.dialogs import JointConfigDialog, JointAnglesDialog
 from src.obstacle import Obstacle
 from src.path import Path
+from src.astar import AStarPathfinder
 
 class FABRIKWidget(QMainWindow):
     """Main application window for FABRIK simulator"""
@@ -35,7 +36,11 @@ class FABRIKWidget(QMainWindow):
         # Obstacle mode
         self.obstacle_mode = False
         
-        # End effector selection (default to last joint)
+        # A* Pathfinding
+        self.astar = AStarPathfinder(grid_size=20)
+        self.astar_mode = False  # A* pathfinding mode
+        self.astar_goal = None  # Temporary goal for A* visualization
+        self.show_grid = True  # Toggle grid visualization
         
         # Path manager
         self.path = Path(step_size=10.0, speed=2.0)
@@ -84,7 +89,13 @@ class FABRIKWidget(QMainWindow):
         self.raw_path_points_plot = pg.ScatterPlotItem(size=12, brush=pg.mkBrush('yellow'), symbol='o')
         
         # Obstacle visualization items (will be updated dynamically)
-        self.obstacle_plots = []  # List of (center_plot, circle_plot) tuples
+        self.obstacle_plots = []  # List of (center_plot, circle_plot, warning_plot) tuples
+        
+        # A* visualization items
+        self.grid_text_items = []  # List of TextItem objects for grid costs
+        self.astar_path_plot = pg.PlotDataItem(pen=pg.mkPen(color='lime', width=3, style=Qt.PenStyle.SolidLine))
+        self.astar_waypoints_plot = pg.ScatterPlotItem(size=10, brush=pg.mkBrush('lime'), symbol='s')
+        self.astar_goal_plot = pg.ScatterPlotItem(size=15, brush=pg.mkBrush('red'), symbol='x')
         
         self.plot_widget.addItem(self.links_plot)
         self.plot_widget.addItem(self.joints_plot)
@@ -95,6 +106,9 @@ class FABRIKWidget(QMainWindow):
         self.plot_widget.addItem(self.path_plot)
         self.plot_widget.addItem(self.path_points_plot)
         self.plot_widget.addItem(self.raw_path_points_plot)
+        self.plot_widget.addItem(self.astar_path_plot)
+        self.plot_widget.addItem(self.astar_waypoints_plot)
+        self.plot_widget.addItem(self.astar_goal_plot)
         
         main_layout.addWidget(self.plot_widget, stretch=3)
         
@@ -282,6 +296,61 @@ class FABRIKWidget(QMainWindow):
         path_group.setLayout(path_layout)
         layout.addWidget(path_group)
         
+        # A* Pathfinding Controls
+        astar_group = QGroupBox("A* Pathfinding")
+        astar_layout = QVBoxLayout()
+        
+        # A* mode toggle
+        self.astar_mode_btn = QPushButton("Enable A* Mode")
+        self.astar_mode_btn.setCheckable(True)
+        self.astar_mode_btn.clicked.connect(self.toggle_astar_mode)
+        astar_layout.addWidget(self.astar_mode_btn)
+        
+        # Grid size control
+        grid_size_layout = QHBoxLayout()
+        grid_size_layout.addWidget(QLabel("Grid Size:"))
+        self.grid_size_spin = QSpinBox()
+        self.grid_size_spin.setMinimum(5)
+        self.grid_size_spin.setMaximum(50)
+        self.grid_size_spin.setValue(20)
+        self.grid_size_spin.setSingleStep(5)
+        self.grid_size_spin.valueChanged.connect(self.on_grid_size_changed)
+        grid_size_layout.addWidget(self.grid_size_spin)
+        grid_size_layout.addWidget(QLabel("px"))
+        astar_layout.addLayout(grid_size_layout)
+        
+        # A* path interpolation step size
+        astar_step_layout = QHBoxLayout()
+        astar_step_layout.addWidget(QLabel("A* Step Size:"))
+        self.astar_step_slider = QSlider(Qt.Orientation.Horizontal)
+        self.astar_step_slider.setMinimum(5)
+        self.astar_step_slider.setMaximum(50)
+        self.astar_step_slider.setValue(10)
+        self.astar_step_slider.valueChanged.connect(self.on_astar_step_changed)
+        astar_step_layout.addWidget(self.astar_step_slider)
+        self.astar_step_label = QLabel("10")
+        astar_step_layout.addWidget(self.astar_step_label)
+        astar_layout.addLayout(astar_step_layout)
+        
+        # Show grid toggle
+        self.show_grid_checkbox = QCheckBox("Show Grid & Costs")
+        self.show_grid_checkbox.setChecked(True)
+        self.show_grid_checkbox.stateChanged.connect(self.on_show_grid_changed)
+        astar_layout.addWidget(self.show_grid_checkbox)
+        
+        # Clear A* path
+        clear_astar_btn = QPushButton("Clear A* Path")
+        clear_astar_btn.clicked.connect(self.clear_astar_path)
+        astar_layout.addWidget(clear_astar_btn)
+        
+        # Status label
+        self.astar_status_label = QLabel("Status: Idle")
+        self.astar_status_label.setStyleSheet("font-size: 9pt; color: gray;")
+        astar_layout.addWidget(self.astar_status_label)
+        
+        astar_group.setLayout(astar_layout)
+        layout.addWidget(astar_group)
+        
         # Solver controls
         solver_group = QGroupBox("Solver Controls")
         solver_layout = QVBoxLayout()
@@ -461,6 +530,26 @@ class FABRIKWidget(QMainWindow):
         else:
             self.raw_path_points_plot.clear()
         
+        # Update A* visualization
+        if self.astar_mode and self.astar_goal is not None:
+            # Show A* waypoints (green squares)
+            if len(self.path.astar_waypoints) > 0:
+                waypoints_array = np.array(self.path.astar_waypoints)
+                self.astar_waypoints_plot.setData(waypoints_array[:, 0], waypoints_array[:, 1])
+                # Draw path connecting waypoints
+                self.astar_path_plot.setData(waypoints_array[:, 0], waypoints_array[:, 1])
+            
+            # Show goal marker
+            self.astar_goal_plot.setData([self.astar_goal[0]], [self.astar_goal[1]])
+            
+            # Show grid costs if enabled
+            if self.show_grid:
+                self.update_grid_visualization()
+        else:
+            self.astar_waypoints_plot.clear()
+            self.astar_path_plot.clear()
+            self.astar_goal_plot.clear()
+        
         # Update info
         distance = np.linalg.norm(self.target_position - self.chain.base_position)
         reachable = distance <= reach_radius
@@ -570,6 +659,18 @@ class FABRIKWidget(QMainWindow):
             new_obstacle = Obstacle(position=(x, y), radius=radius)
             self.obstacles.append(new_obstacle)
             event.accept()
+            return
+        
+        # If in A* pathfinding mode, set goal and generate path (no Ctrl needed)
+        if self.astar_mode:
+            # Check if inside reach circle
+            reach_radius = sum(self.chain.link_lengths[:self.chain.end_effector_index]) if self.chain.end_effector_index > 0 else 0
+            
+            if self.path.is_point_in_reach([x, y], self.chain.base_position, reach_radius):
+                self.generate_astar_path((x, y))
+                event.accept()
+            else:
+                self.astar_status_label.setText("Status: Goal outside reach!")
             return
         
         # If drawing path, add point only if inside reach circle (no Ctrl needed)
@@ -830,4 +931,142 @@ class FABRIKWidget(QMainWindow):
     def on_interp_speed_changed(self, value):
         """Handle interpolation speed change"""
         self.chain.interpolation_speed = value
+    
+    def toggle_astar_mode(self):
+        """Toggle A* pathfinding mode"""
+        self.astar_mode = self.astar_mode_btn.isChecked()
+        if self.astar_mode:
+            self.astar_mode_btn.setText("Disable A* Mode")
+            self.astar_status_label.setText("Status: Click to set goal")
+            
+            # Disable other modes
+            if self.path.is_drawing:
+                self.path.stop_drawing()
+                self.draw_path_btn.setChecked(False)
+                self.draw_path_btn.setText("Start Drawing")
+            
+            if self.obstacle_mode:
+                self.obstacle_mode = False
+                self.add_obstacle_btn.setChecked(False)
+                self.add_obstacle_btn.setText("Add Obstacle")
+        else:
+            self.astar_mode_btn.setText("Enable A* Mode")
+            self.astar_status_label.setText("Status: Idle")
+            self.astar_goal = None
+    
+    def on_grid_size_changed(self, value):
+        """Handle grid size change"""
+        self.astar.set_grid_size(value)
+        # If we have an A* path, regenerate it with new grid size
+        if self.astar_goal is not None:
+            self.generate_astar_path(self.astar_goal)
+    
+    def on_astar_step_changed(self, value):
+        """Handle A* interpolation step size change"""
+        self.astar_step_label.setText(str(value))
+        # If we have an A* path, re-interpolate it
+        if self.path.is_astar_path and len(self.path.astar_waypoints) > 0:
+            old_step = self.path.step_size
+            self.path.step_size = float(value)
+            self.path.interpolate_astar()
+            # Don't change the regular path step size
+    
+    def on_show_grid_changed(self, state):
+        """Handle show grid toggle"""
+        self.show_grid = (state == Qt.CheckState.Checked.value)
+    
+    def generate_astar_path(self, goal_pos):
+        """
+        Generate A* path from current end-effector to goal
+        
+        Args:
+            goal_pos: (x, y) tuple of goal position
+        """
+        # Get current end-effector position as start
+        start_pos = self.chain.joints[self.chain.end_effector_index]
+        
+        # Update workspace bounds
+        view_range = self.plot_widget.viewRange()
+        self.astar.set_workspace_bounds(
+            view_range[0][0], view_range[1][0],
+            view_range[0][1], view_range[1][1]
+        )
+        
+        # Generate obstacle grid
+        self.astar.generate_obstacle_grid(self.obstacles)
+        
+        # Find path
+        self.astar_status_label.setText("Status: Calculating path...")
+        QApplication.processEvents()  # Update UI
+        
+        waypoints = self.astar.find_path(start_pos, goal_pos)
+        
+        if waypoints is None:
+            self.astar_status_label.setText("Status: No path found!")
+            self.astar_goal = None
+            return
+        
+        # Set the A* path
+        self.path.set_astar_path(waypoints)
+        
+        # Use A* step size for interpolation
+        self.path.step_size = float(self.astar_step_slider.value())
+        self.path.interpolate_astar()
+        
+        # Enable follow button
+        self.follow_path_btn.setEnabled(True)
+        
+        self.astar_status_label.setText(f"Status: Path found! ({len(waypoints)} waypoints)")
+        self.astar_goal = goal_pos
+    
+    def clear_astar_path(self):
+        """Clear A* pathfinding data"""
+        self.astar_goal = None
+        self.astar.clear()
+        if self.path.is_astar_path:
+            self.path.clear()
+            self.follow_path_btn.setEnabled(False)
+        self.astar_status_label.setText("Status: Idle")
+        # Clear grid text items
+        for text_item in self.grid_text_items:
+            self.plot_widget.removeItem(text_item)
+        self.grid_text_items.clear()
+    
+    def update_grid_visualization(self):
+        """Update grid cost visualization with text labels"""
+        # Clear old text items
+        for text_item in self.grid_text_items:
+            self.plot_widget.removeItem(text_item)
+        self.grid_text_items.clear()
+        
+        # Only show grid for cells that were visited during A*
+        view_range = self.plot_widget.viewRange()
+        min_x, max_x = view_range[0]
+        min_y, max_y = view_range[1]
+        
+        # Limit number of text items for performance
+        max_items = 200
+        count = 0
+        
+        for grid_pos, cost in self.astar.grid_costs.items():
+            if count >= max_items:
+                break
+            
+            grid_x, grid_y = grid_pos
+            world_x, world_y = self.astar.grid_to_world(grid_x, grid_y)
+            
+            # Only show if in view
+            if min_x <= world_x <= max_x and min_y <= world_y <= max_y:
+                # Create text item
+                text = pg.TextItem(
+                    text=f"{cost:.1f}",
+                    color=(100, 100, 100),
+                    anchor=(0.5, 0.5)
+                )
+                text.setFont(pg.QtGui.QFont("Arial", 8))
+                text.setPos(world_x, world_y)
+                
+                self.plot_widget.addItem(text)
+                self.grid_text_items.append(text)
+                count += 1
 

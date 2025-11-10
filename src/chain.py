@@ -96,7 +96,14 @@ class FABRIKChain:
             for obstacle in self.obstacles:
                 if obstacle.is_point_inside(joints[i]):
                     return True
-        
+        #Check if any link intersects an obstacle
+        for i in range(len(joints) - 1):
+            start = joints[i]
+            end = joints[i + 1]
+            for obstacle in self.obstacles:
+                tangent = obstacle.get_tangent_direction(start, end)
+                if tangent is not None:
+                    return True
         return False
     
     def update_interpolation(self, poseA = None, poseB = None):
@@ -202,25 +209,10 @@ class FABRIKChain:
                 if distance > 0:
                     direction = direction / distance
                 
-                # Check for link collision with obstacles
                 new_pos = temp_joints[i + 1] + direction * self.link_lengths[i]
                 
-                if self.obstacles:
-                    for obstacle in self.obstacles:
-                        # Check if link would pass through obstacle
-                        tangent_dir = obstacle.get_tangent_direction(temp_joints[i + 1], new_pos)
-                        if tangent_dir is not None:
-                            # Link hits obstacle, redirect along tangent
-                            direction = tangent_dir
-                            new_pos = temp_joints[i + 1] + direction * self.link_lengths[i]
                 
                 temp_joints[i] = new_pos
-                
-                # Check if joint ended up inside obstacle, push to boundary
-                if self.obstacles:
-                    for obstacle in self.obstacles:
-                        if obstacle.is_point_inside(temp_joints[i]):
-                            temp_joints[i] = obstacle.get_nearest_boundary_point(temp_joints[i])
             
             # Backward reaching - start from base
             temp_joints[0] = self.base_position
@@ -232,25 +224,10 @@ class FABRIKChain:
                 if distance > 0:
                     direction = direction / distance
                 
-                # Check for link collision with obstacles
                 new_pos = temp_joints[i] + direction * self.link_lengths[i]
-                
-                if self.obstacles:
-                    for obstacle in self.obstacles:
-                        # Check if link would pass through obstacle
-                        tangent_dir = obstacle.get_tangent_direction(temp_joints[i], new_pos)
-                        if tangent_dir is not None:
-                            # Link hits obstacle, redirect along tangent
-                            direction = tangent_dir
-                            new_pos = temp_joints[i] + direction * self.link_lengths[i]
                 
                 temp_joints[i + 1] = new_pos
                 
-                # Check if joint ended up inside obstacle, push to boundary
-                if self.obstacles:
-                    for obstacle in self.obstacles:
-                        if obstacle.is_point_inside(temp_joints[i + 1]):
-                            temp_joints[i + 1] = obstacle.get_nearest_boundary_point(temp_joints[i + 1])
             
             diff = np.linalg.norm(temp_joints[-1] - target)
             iterations += 1

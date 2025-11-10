@@ -18,8 +18,12 @@ class Path:
             speed: Movement speed when following path
         """
         # Path data
-        self.raw_points = []  # Raw clicked points
+        self.raw_points = []  # Raw clicked points (manual drawing)
         self.interpolated_points = []  # Interpolated smooth path
+        
+        # A* path data
+        self.astar_waypoints = []  # Raw A* waypoints (grid path)
+        self.is_astar_path = False  # Flag to distinguish A* vs manual path
         
         # Path state
         self.is_drawing = False
@@ -55,8 +59,61 @@ class Path:
         """Clear all path data"""
         self.raw_points = []
         self.interpolated_points = []
+        self.astar_waypoints = []
         self.current_index = 0
         self.is_following = False
+        self.is_astar_path = False
+    
+    def set_astar_path(self, waypoints):
+        """
+        Set path from A* waypoints and interpolate
+        
+        Args:
+            waypoints: List of [x, y] coordinates from A* pathfinding
+        """
+        self.astar_waypoints = waypoints
+        self.is_astar_path = True
+        self.is_following = False
+        
+        # Clear manual drawing data
+        self.raw_points = []
+        
+        # Interpolate A* waypoints
+        self.interpolate_astar()
+    
+    def interpolate_astar(self):
+        """Interpolate A* waypoints with smaller steps"""
+        if len(self.astar_waypoints) == 0:
+            self.interpolated_points = []
+            return
+        
+        if len(self.astar_waypoints) == 1:
+            self.interpolated_points = [self.astar_waypoints[0]]
+            return
+        
+        # Interpolate between consecutive A* waypoints
+        interpolated = []
+        
+        for i in range(len(self.astar_waypoints) - 1):
+            start_point = np.array(self.astar_waypoints[i])
+            end_point = np.array(self.astar_waypoints[i + 1])
+            
+            interpolated.append(start_point.tolist())
+            
+            # Calculate distance and number of steps
+            distance = np.linalg.norm(end_point - start_point)
+            if distance > self.step_size:
+                num_steps = int(distance / self.step_size)
+                
+                for step in range(1, num_steps):
+                    t = step / num_steps
+                    interp_point = start_point + t * (end_point - start_point)
+                    interpolated.append(interp_point.tolist())
+        
+        # Add final waypoint
+        interpolated.append(self.astar_waypoints[-1])
+        
+        self.interpolated_points = interpolated
     
     def interpolate(self):
         """Interpolate between raw points to create smooth path"""
