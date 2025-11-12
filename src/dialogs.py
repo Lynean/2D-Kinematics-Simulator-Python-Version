@@ -25,17 +25,21 @@ class JointConfigDialog(QDialog):
         
         # Instructions
         instructions = QLabel(
-            "<b>Configure Joint Positions</b><br>"
+            "<b>Configure Joint Positions and Angle Limits</b><br>"
             "Modify X and Y coordinates for each joint.<br>"
+            "Set min/max angle limits (in degrees) for servo constraints.<br>"
+            "<i>Joint 0 (Base) controls the first link's rotation angle.</i><br>"
             "Link lengths will be maintained when solving."
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
         
-        # Table for joint positions
+        # Table for joint positions and angle limits
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Joint", "X Position", "Y Position"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels([
+            "Joint", "X Position", "Y Position", "Min Angle (°)", "Max Angle (°)"
+        ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table)
         
@@ -62,7 +66,7 @@ class JointConfigDialog(QDialog):
         layout.addWidget(self.info_label)
     
     def load_joint_data(self):
-        """Load current joint positions into table"""
+        """Load current joint positions and angle limits into table"""
         self.table.setRowCount(self.chain.num_joints)
         
         for i in range(self.chain.num_joints):
@@ -80,6 +84,20 @@ class JointConfigDialog(QDialog):
             # Y position
             y_item = QTableWidgetItem(f"{self.chain.joints[i][1]:.2f}")
             self.table.setItem(i, 2, y_item)
+            
+            # Angle limits (convert from radians to degrees)
+            min_angle_rad, max_angle_rad = self.chain.angle_limits[i]
+            min_angle_deg = np.degrees(min_angle_rad)
+            max_angle_deg = np.degrees(max_angle_rad)
+            
+            min_item = QTableWidgetItem(f"{min_angle_deg:.1f}")
+            max_item = QTableWidgetItem(f"{max_angle_deg:.1f}")
+            
+            # All joints now have editable angle constraints (including base)
+            # Base joint (index 0) controls the first link's angle from horizontal
+            
+            self.table.setItem(i, 3, min_item)
+            self.table.setItem(i, 4, max_item)
         
         self.update_info()
     
@@ -105,11 +123,29 @@ class JointConfigDialog(QDialog):
             
             self.chain.total_length = sum(self.chain.link_lengths)
             
+            # Update angle limits (convert from degrees to radians)
+            # Now includes base joint (index 0) which controls first link angle
+            for i in range(self.chain.num_joints):
+                min_deg = float(self.table.item(i, 3).text())
+                max_deg = float(self.table.item(i, 4).text())
+                
+                # Validate angle range
+                if min_deg >= max_deg:
+                    raise ValueError(f"Joint {i}: Min angle must be less than max angle")
+                
+                if max_deg - min_deg > 360:
+                    raise ValueError(f"Joint {i}: Angle range cannot exceed 360 degrees")
+                
+                # Convert to radians and update
+                min_rad = np.radians(min_deg)
+                max_rad = np.radians(max_deg)
+                self.chain.set_joint_limits(i, min_rad, max_rad)
+            
             self.info_label.setText("✓ Changes applied successfully!")
             self.info_label.setStyleSheet("color: green; font-style: italic;")
             
         except ValueError as e:
-            self.info_label.setText(f"✗ Error: Invalid number format!")
+            self.info_label.setText(f"✗ Error: {str(e)}")
             self.info_label.setStyleSheet("color: red; font-style: italic;")
         except Exception as e:
             self.info_label.setText(f"✗ Error: {str(e)}")

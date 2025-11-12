@@ -30,6 +30,7 @@ class FABRIKWidget(QMainWindow):
         
         # Interaction state
         self.show_reach_circle = True
+        self.show_angle_limits = False  # Toggle angle limit visualization
         self.auto_solve = True
         self.manual_mode = False  # Flag to disable auto-solve during manual positioning
         
@@ -96,6 +97,10 @@ class FABRIKWidget(QMainWindow):
         self.astar_path_plot = pg.PlotDataItem(pen=pg.mkPen(color='lime', width=3, style=Qt.PenStyle.SolidLine))
         self.astar_waypoints_plot = pg.ScatterPlotItem(size=10, brush=pg.mkBrush('lime'), symbol='s')
         self.astar_goal_plot = pg.ScatterPlotItem(size=15, brush=pg.mkBrush('red'), symbol='x')
+        
+        # Angle limit visualization items
+        self.angle_limit_plots = []  # List of PlotDataItem for angle limit arcs
+
         
         self.plot_widget.addItem(self.links_plot)
         self.plot_widget.addItem(self.joints_plot)
@@ -216,6 +221,11 @@ class FABRIKWidget(QMainWindow):
         self.show_reach_checkbox.stateChanged.connect(self.on_display_changed)
         display_layout.addWidget(self.show_reach_checkbox)
         
+        self.show_angle_limits_checkbox = QCheckBox("Show Angle Limits")
+        self.show_angle_limits_checkbox.setChecked(False)
+        self.show_angle_limits_checkbox.stateChanged.connect(self.on_display_changed)
+        display_layout.addWidget(self.show_angle_limits_checkbox)
+        
         self.auto_solve_checkbox = QCheckBox("Auto Solve")
         self.auto_solve_checkbox.setChecked(True)
         self.auto_solve_checkbox.stateChanged.connect(self.on_auto_solve_changed)
@@ -280,13 +290,21 @@ class FABRIKWidget(QMainWindow):
         speed_layout.addWidget(self.speed_label)
         path_layout.addLayout(speed_layout)
         
+        # Path interpolation toggle
+        self.interpolate_path_checkbox = QCheckBox("Enable Path Interpolation")
+        self.interpolate_path_checkbox.setChecked(True)
+        self.interpolate_path_checkbox.setToolTip("Toggle smooth interpolation between path points. Uncheck to use raw points only.")
+        self.interpolate_path_checkbox.stateChanged.connect(self.on_interpolation_changed)
+        path_layout.addWidget(self.interpolate_path_checkbox)
+        
         # Path smoothness control
         smooth_layout = QHBoxLayout()
         smooth_layout.addWidget(QLabel("Path Step Size:"))
         self.step_size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.step_size_slider.setMinimum(5)
+        self.step_size_slider.setMinimum(1)  # Allow minimum of 1 (fine interpolation)
         self.step_size_slider.setMaximum(50)
         self.step_size_slider.setValue(10)
+        self.step_size_slider.setToolTip("Distance between path waypoints (1=finest, 50=coarsest)")
         self.step_size_slider.valueChanged.connect(self.on_step_size_changed)
         smooth_layout.addWidget(self.step_size_slider)
         self.step_size_label = QLabel("10")
@@ -363,6 +381,13 @@ class FABRIKWidget(QMainWindow):
         reset_btn.clicked.connect(self.reset_chain)
         solver_layout.addWidget(reset_btn)
         
+        # Smooth interpolation toggle
+        self.smooth_interp_checkbox = QCheckBox("Enable Smooth Movement")
+        self.smooth_interp_checkbox.setChecked(True)
+        self.smooth_interp_checkbox.setToolTip("Smooth angular interpolation between waypoints. Uncheck for instant movement.")
+        self.smooth_interp_checkbox.stateChanged.connect(self.on_smooth_interp_changed)
+        solver_layout.addWidget(self.smooth_interp_checkbox)
+        
         # Interpolation speed control
         interp_speed_layout = QHBoxLayout()
         interp_speed_layout.addWidget(QLabel("Smooth Speed:"))
@@ -371,6 +396,7 @@ class FABRIKWidget(QMainWindow):
         self.interp_speed_spin.setMaximum(1.0)
         self.interp_speed_spin.setValue(0.02)
         self.interp_speed_spin.setSingleStep(0.01)
+        self.interp_speed_spin.setToolTip("Speed of smooth interpolation (0.01=slowest, 1.0=fastest)")
         self.interp_speed_spin.valueChanged.connect(self.on_interp_speed_changed)
         interp_speed_layout.addWidget(self.interp_speed_spin)
         solver_layout.addLayout(interp_speed_layout)
@@ -449,6 +475,100 @@ class FABRIKWidget(QMainWindow):
         layout.addStretch()
         return panel
     
+    def update_angle_limit_visualization(self):
+        """Update visualization of angle limits for each joint"""
+        # Clear existing angle limit plots
+        for plot in self.angle_limit_plots:
+            self.plot_widget.removeItem(plot)
+        self.angle_limit_plots.clear()
+        
+        if not self.show_angle_limits:
+            return
+        
+        # Draw angle limit arcs for each joint
+        # Base joint (index 0) controls the first link's angle
+        for i in range(self.chain.num_joints):
+            # For base joint (i=0), we visualize the first link's angle constraint
+            # For other joints (i>0), we visualize the angle at that joint
+            
+            if i == 0:
+                # Base joint - visualize first link constraint
+                min_angle, max_angle = self.chain.angle_limits[0]
+                
+                # Skip if full rotation (no constraint)
+                if max_angle - min_angle >= 2 * np.pi - 0.01:
+                    continue
+                
+                joint_pos = self.chain.joints[0]  # Base position
+                
+                # Absolute angles from horizontal
+                abs_min = min_angle
+                abs_max = max_angle
+                
+                # Arc radius for base
+                arc_radius = self.chain.link_lengths[0] * 0.5 if len(self.chain.link_lengths) > 0 else 30
+            else:
+                # Regular joint constraint
+                min_angle, max_angle = self.chain.angle_limits[i]
+                
+                # Skip if full rotation (no constraint)
+                if max_angle - min_angle >= 2 * np.pi - 0.01:
+                    continue
+                
+                # Get joint position
+                joint_pos = self.chain.joints[i]
+                
+                # Get previous link angle (for relative angle calculation)
+                prev_direction = joint_pos - self.chain.joints[i - 1]
+                prev_angle = np.arctan2(prev_direction[1], prev_direction[0])
+                
+                # Calculate absolute angles
+                abs_min = prev_angle + min_angle
+                abs_max = prev_angle + max_angle
+                
+                # Arc radius (proportional to link length)
+                if i < len(self.chain.link_lengths):
+                    arc_radius = self.chain.link_lengths[i] * 0.5
+                else:
+                    arc_radius = 30
+            
+            # Generate arc points
+            num_points = 50
+            theta = np.linspace(abs_min, abs_max, num_points)
+            arc_x = joint_pos[0] + arc_radius * np.cos(theta)
+            arc_y = joint_pos[1] + arc_radius * np.sin(theta)
+            
+            # Add radial lines at limits
+            line_start_x = [joint_pos[0], joint_pos[0] + arc_radius * np.cos(abs_min)]
+            line_start_y = [joint_pos[1], joint_pos[1] + arc_radius * np.sin(abs_min)]
+            line_end_x = [joint_pos[0], joint_pos[0] + arc_radius * np.cos(abs_max)]
+            line_end_y = [joint_pos[1], joint_pos[1] + arc_radius * np.sin(abs_max)]
+            
+            # Create plot items
+            arc_plot = pg.PlotDataItem(
+                arc_x, arc_y,
+                pen=pg.mkPen(color=(255, 200, 0, 150), width=2)
+            )
+            line1_plot = pg.PlotDataItem(
+                line_start_x, line_start_y,
+                pen=pg.mkPen(color=(255, 200, 0, 100), width=1)
+            )
+            line2_plot = pg.PlotDataItem(
+                line_end_x, line_end_y,
+                pen=pg.mkPen(color=(255, 200, 0, 100), width=1)
+            )
+            
+            # Add to plot
+            self.plot_widget.addItem(arc_plot)
+            self.plot_widget.addItem(line1_plot)
+            self.plot_widget.addItem(line2_plot)
+            
+            # Track for cleanup
+            self.angle_limit_plots.append(arc_plot)
+            self.angle_limit_plots.append(line1_plot)
+            self.angle_limit_plots.append(line2_plot)
+
+    
     def update_plot(self):
         """Update the plot with current chain state"""
         # Follow path if enabled
@@ -477,6 +597,41 @@ class FABRIKWidget(QMainWindow):
                 if distance_to_waypoint < 5.0 or not result:
                     # Move to next waypoint
                     self.path.advance_to_next_waypoint()
+                    
+                    # If smooth interpolation is enabled, start interpolating to the new waypoint
+                    if self.chain.enable_smooth_interpolation:
+                        next_waypoint = self.path.get_current_target()
+                        
+                        # Solve for the next waypoint to get target pose
+                        if self.chain.end_effector_index == self.chain.num_joints - 1:
+                            # Full chain case
+                            temp_chain = FABRIKChain(self.chain.base_position,
+                                                    num_joints=self.chain.num_joints,
+                                                    obstacles=self.chain.obstacles)
+                            temp_chain.joints = self.chain.joints.copy()
+                            temp_chain.link_lengths = self.chain.link_lengths.copy()
+                            temp_chain.solve(next_waypoint)
+                            
+                            # Start interpolation to next waypoint
+                            self.chain.update_interpolation(poseA=self.chain.joints, poseB=temp_chain.joints)
+                        else:
+                            # Sub-chain case
+                            temp_chain = FABRIKChain(self.chain.base_position,
+                                                    num_joints=self.chain.end_effector_index + 1,
+                                                    obstacles=self.chain.obstacles)
+                            temp_chain.joints = self.chain.joints[:self.chain.end_effector_index + 1].copy()
+                            temp_chain.link_lengths = self.chain.link_lengths[:self.chain.end_effector_index]
+                            temp_chain.solve(next_waypoint)
+                            
+                            # Create full target with remaining joints in current positions
+                            full_target_joints = self.chain.joints.copy()
+                            full_target_joints[:self.chain.end_effector_index + 1] = temp_chain.joints
+                            
+                            # Start interpolation to next waypoint
+                            self.chain.update_interpolation(poseA=self.chain.joints, poseB=full_target_joints)
+                        
+                        print(f"Interpolating to waypoint {self.path.current_index}...")
+
         else:
             # Only auto-solve if not in manual mode and not following path
             if self.auto_solve and not self.manual_mode:
@@ -550,6 +705,9 @@ class FABRIKWidget(QMainWindow):
             self.astar_path_plot.clear()
             self.astar_goal_plot.clear()
         
+        # Update angle limit visualization
+        self.update_angle_limit_visualization()
+        
         # Update info
         distance = np.linalg.norm(self.target_position - self.chain.base_position)
         reachable = distance <= reach_radius
@@ -573,11 +731,14 @@ class FABRIKWidget(QMainWindow):
         Max Iterations: {self.chain.max_iterations}<br>
         Last Iterations: {self.chain.current_iterations}<br>
         Tolerance: {self.chain.tolerance}<br>
+        Smooth Movement: {'Enabled' if self.chain.enable_smooth_interpolation else 'Disabled (Instant)'}<br>
+        Interpolation Speed: {self.chain.interpolation_speed:.2f}<br>
         Interpolating: {'Yes' if self.chain.is_interpolating else 'No'}<br>
         {f'Progress: {self.chain.interpolation_progress*100:.0f}%' if self.chain.is_interpolating else ''}<br>
         <br>
         <b>Path Info:</b><br>
         Points: {len(self.path.interpolated_points)}<br>
+        Interpolation: {'Enabled' if self.path.enable_interpolation else 'Disabled (Raw Points)'}<br>
         Following: {'Yes' if self.path.is_following else 'No'}
         """
         self.info_label.setText(info_text.strip())
@@ -780,6 +941,8 @@ class FABRIKWidget(QMainWindow):
     def on_display_changed(self):
         """Handle display options change"""
         self.show_reach_circle = self.show_reach_checkbox.isChecked()
+        self.show_angle_limits = self.show_angle_limits_checkbox.isChecked()
+        self.update_plot()
     
     def on_auto_solve_changed(self):
         """Handle auto-solve toggle"""
@@ -871,8 +1034,14 @@ class FABRIKWidget(QMainWindow):
                     temp_chain.link_lengths = self.chain.link_lengths.copy()
                     temp_chain.solve(first_waypoint)
                     
-                    # Start interpolation for full chain
-                    self.chain.update_interpolation(poseA = self.chain.joints, poseB=temp_chain.joints)
+                    # Start interpolation for full chain (if enabled)
+                    if self.chain.enable_smooth_interpolation:
+                        self.chain.update_interpolation(poseA = self.chain.joints, poseB=temp_chain.joints)
+                        print("Starting interpolation to first waypoint...")
+                    else:
+                        # Directly set to target without interpolation
+                        self.chain.joints = temp_chain.joints
+                        print("Moving to first waypoint (no interpolation)...")
                 else:
                     # Sub-chain case - only interpolate the sub-chain to end effector
                     temp_chain = FABRIKChain(self.chain.base_position,
@@ -887,10 +1056,15 @@ class FABRIKWidget(QMainWindow):
                     full_target_joints = self.chain.joints.copy()
                     full_target_joints[:self.chain.end_effector_index + 1] = temp_chain.joints
                     
-                    # Start interpolation
-                    self.chain.update_interpolation(poseA = self.chain.joints, poseB=full_target_joints)
+                    # Start interpolation (if enabled)
+                    if self.chain.enable_smooth_interpolation:
+                        self.chain.update_interpolation(poseA = self.chain.joints, poseB=full_target_joints)
+                        print("Starting interpolation to first waypoint...")
+                    else:
+                        # Directly set to target without interpolation
+                        self.chain.joints = full_target_joints
+                        print("Moving to first waypoint (no interpolation)...")
 
-                print("Starting interpolation to first waypoint...")
         else:
             self.path.stop_following()
             self.follow_path_btn.setText("Follow Path")
@@ -922,6 +1096,32 @@ class FABRIKWidget(QMainWindow):
         self.path.set_speed(value)
         self.speed_label.setText(f"{value}.0")
         self.timer.start(round(64/self.path.speed))
+    
+    def on_interpolation_changed(self):
+        """Handle path interpolation toggle"""
+        self.path.enable_interpolation = self.interpolate_path_checkbox.isChecked()
+        
+        # Re-interpolate current path with new setting
+        if self.path.is_astar_path:
+            self.path.interpolate_astar()
+        else:
+            self.path.interpolate()
+        
+        # Update step size slider state
+        self.step_size_slider.setEnabled(self.path.enable_interpolation)
+        self.step_size_label.setEnabled(self.path.enable_interpolation)
+    
+    def on_smooth_interp_changed(self):
+        """Handle smooth interpolation toggle"""
+        self.chain.enable_smooth_interpolation = self.smooth_interp_checkbox.isChecked()
+        
+        # Enable/disable speed control based on smooth interpolation setting
+        self.interp_speed_spin.setEnabled(self.chain.enable_smooth_interpolation)
+        
+        # If currently interpolating and user disabled it, stop interpolation
+        if not self.chain.enable_smooth_interpolation and self.chain.is_interpolating:
+            self.chain.is_interpolating = False
+            self.chain.interpolation_progress = 0.0
 
     def on_step_size_changed(self, value):
         """Handle path step size change"""

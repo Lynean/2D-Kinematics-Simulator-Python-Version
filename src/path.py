@@ -33,6 +33,7 @@ class Path:
         # Path parameters
         self.step_size = step_size
         self.speed = speed
+        self.enable_interpolation = True  # Toggle for path interpolation
     
     def start_drawing(self):
         """Start path drawing mode"""
@@ -91,6 +92,11 @@ class Path:
             self.interpolated_points = [self.astar_waypoints[0]]
             return
         
+        # If interpolation is disabled, just use raw waypoints
+        if not self.enable_interpolation:
+            self.interpolated_points = self.astar_waypoints.copy()
+            return
+        
         # Interpolate between consecutive A* waypoints
         interpolated = []
         
@@ -123,6 +129,11 @@ class Path:
         
         if len(self.raw_points) == 1:
             self.interpolated_points = [self.raw_points[0]]
+            return
+        
+        # If interpolation is disabled, just use raw points
+        if not self.enable_interpolation:
+            self.interpolated_points = self.raw_points.copy()
             return
         
         # Interpolate between consecutive points
@@ -170,6 +181,11 @@ class Path:
         """
         if len(self.interpolated_points) == 0:
             return None
+        
+        # Safety check: ensure index is within bounds
+        if self.current_index >= len(self.interpolated_points):
+            self.current_index = 0
+        
         return np.array(self.interpolated_points[self.current_index])
     
     def advance_to_next_waypoint(self):
@@ -204,7 +220,11 @@ class Path:
             step_size: New step size value
         """
         self.step_size = step_size
-        if len(self.raw_points) > 0:
+        
+        # Re-interpolate based on path type
+        if self.is_astar_path and len(self.astar_waypoints) > 0:
+            self.interpolate_astar()
+        elif len(self.raw_points) > 0:
             self.interpolate()
     
     def set_speed(self, speed):
