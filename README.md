@@ -104,6 +104,32 @@ python main.py
 - **Information Panel**: Real-time stats on chain, target, solver, and path
 - **Scrollable UI**: All controls accessible in organized, scrollable sidebar
 
+### 🔬 Configuration Space Visualization
+- **Real-time C-Space Viewer**: Dedicated window showing joint angles in configuration space
+- **Time Series Plot**: All joint angles plotted over time with color-coded traces
+- **2D Configuration Space**: Visual representation of Joint 0 vs Joint 1 with constraint boundaries
+- **Monte Carlo Obstacle Mapping**: 
+  - Automatic sampling when obstacles are added (1000 samples)
+  - Visualizes forbidden regions in C-space as red scatter points
+  - Shows which joint angle combinations cause collisions
+  - ~0.08s sampling time for typical obstacles
+- **Path Tracking**: Blue trail shows configuration space path
+- **Configurable History**: Adjustable tracking buffer (10-2000 timesteps)
+
+### 🎛️ Multiple IK Methods
+- **FABRIK (Default)**: Fast Forward And Backward Reaching algorithm
+- **CCD (Cyclic Coordinate Descent)**: Alternative IK method with better constraint handling
+- **Method Selector**: Dropdown menu to switch between IK algorithms
+- **Modular Architecture**: IK algorithms in separate files for maintainability
+- See `IK_METHODS.md` for detailed comparison
+
+### 🤖 Robot Communication
+- **Serial Communication**: Send joint angles to external robots via serial port
+- **Auto Port Discovery**: Automatically detect available serial ports
+- **Configurable Format**: Degrees or radians, customizable delimiters
+- **Example Integration**: Sample code in `serial_example.py`
+- See `SERIAL_README.md` for setup instructions
+
 ## 🚀 Installation
 
 ### Prerequisites

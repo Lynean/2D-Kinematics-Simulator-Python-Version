@@ -1,57 +1,50 @@
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                               QHBoxLayout, QPushButton, QLabel, QSpinBox, 
-                              QDoubleSpinBox, QGroupBox, QSlider, QCheckBox,
-                              QDialog, QTableWidget, QTableWidgetItem, QHeaderView,
-                              QScrollArea)
+                              QDoubleSpinBox, QGroupBox, QCheckBox)
 from PyQt6.QtCore import Qt, QTimer
 import pyqtgraph as pg
 import numpy as np
 
 from src.chain import FABRIKChain
-from src.dialogs import JointConfigDialog, JointAnglesDialog
+from src.config_space_viewer import ConfigSpaceViewer
 from src.obstacle import Obstacle
-from src.path import Path
-from src.astar import AStarPathfinder
+from src.monte_carlo import MonteCarloSampler
 
 class FABRIKWidget(QMainWindow):
     """Main application window for FABRIK simulator"""
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("FABRIK Interactive Kinematic Chain Simulator")
+        self.setWindowTitle("FABRIK Kinematic Chain Simulator")
         self.setGeometry(100, 100, 1200, 800)
         
         # Initialize obstacles
         self.obstacles = []
+        self.cspace_obstacles = []  # Store C-space obstacle data
         
         # Initialize FABRIK chain
-        self.chain = FABRIKChain(base_position=(100, 300), num_joints=5, link_length=60, obstacles=self.obstacles)
+        self.chain = FABRIKChain(base_position=(100, 300), num_joints=3, link_length=60, obstacles=self.obstacles)
         self.target_position = self.chain.joints[-1].copy()
+        
+        # Monte Carlo sampler for C-space obstacle mapping
+        self.mc_sampler = MonteCarloSampler(self.chain, num_samples=1000)
         
         # Interaction state
         self.show_reach_circle = True
-        self.show_angle_limits = False  # Toggle angle limit visualization
         self.auto_solve = True
-        self.manual_mode = False  # Flag to disable auto-solve during manual positioning
         
         # Obstacle mode
         self.obstacle_mode = False
         
-        # A* Pathfinding
-        self.astar = AStarPathfinder(grid_size=20)
-        self.astar_mode = False  # A* pathfinding mode
-        self.astar_goal = None  # Temporary goal for A* visualization
-        self.show_grid = True  # Toggle grid visualization
-        
-        # Path manager
-        self.path = Path(step_size=10.0, speed=2.0)
+        # Config space viewer
+        self.config_space_viewer = None
         
         self.setup_ui()
         
         # Timer for smooth updates
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_plot)
-        self.timer.start(round(32/self.path.speed))  # ~30 FPS
+        self.timer.start(33)  # ~30 FPS
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -100,6 +93,9 @@ class FABRIKWidget(QMainWindow):
         
         # Angle limit visualization items
         self.angle_limit_plots = []  # List of PlotDataItem for angle limit arcs
+        
+        # Shadow visualization items
+        self.shadow_plots = []  # List of PlotDataItem for shadow chains
 
         
         self.plot_widget.addItem(self.links_plot)
@@ -142,8 +138,8 @@ class FABRIKWidget(QMainWindow):
         joints_layout = QHBoxLayout()
         joints_layout.addWidget(QLabel("Number of Joints:"))
         self.joints_spinbox = QSpinBox()
-        self.joints_spinbox.setMinimum(2)
-        self.joints_spinbox.setMaximum(20)
+        self.joints_spinbox.setMinimum(0)
+        self.joints_spinbox.setMaximum(4)
         self.joints_spinbox.setValue(self.chain.num_joints)
         self.joints_spinbox.valueChanged.connect(self.on_joints_changed)
         joints_layout.addWidget(self.joints_spinbox)
@@ -168,6 +164,11 @@ class FABRIKWidget(QMainWindow):
         show_angles_btn = QPushButton("Show Joint Angles")
         show_angles_btn.clicked.connect(self.open_angles_monitor)
         chain_layout.addWidget(show_angles_btn)
+        
+        # Config space viewer button
+        config_space_btn = QPushButton("Configuration Space Viewer")
+        config_space_btn.clicked.connect(self.open_config_space_viewer)
+        chain_layout.addWidget(config_space_btn)
         
         # Link length
         length_layout = QHBoxLayout()
@@ -372,6 +373,17 @@ class FABRIKWidget(QMainWindow):
         # Solver controls
         solver_group = QGroupBox("Solver Controls")
         solver_layout = QVBoxLayout()
+        
+        # IK Method selection
+        ik_method_layout = QHBoxLayout()
+        ik_method_layout.addWidget(QLabel("IK Method:"))
+        self.ik_method_combo = QComboBox()
+        self.ik_method_combo.addItems(["FABRIK", "CCD"])
+        self.ik_method_combo.setCurrentText("FABRIK")
+        self.ik_method_combo.setToolTip("FABRIK: Forward And Backward Reaching\nCCD: Cyclic Coordinate Descent")
+        self.ik_method_combo.currentTextChanged.connect(self.on_ik_method_changed)
+        ik_method_layout.addWidget(self.ik_method_combo)
+        solver_layout.addLayout(ik_method_layout)
         
         solve_btn = QPushButton("Solve Once")
         solve_btn.clicked.connect(self.solve_once)
@@ -636,7 +648,6 @@ class FABRIKWidget(QMainWindow):
             # Only auto-solve if not in manual mode and not following path
             if self.auto_solve and not self.manual_mode:
                 self.solve_for_end_effector()
-        
         # Update links
         self.links_plot.setData(self.chain.joints[:, 0], self.chain.joints[:, 1])
         
@@ -760,6 +771,10 @@ class FABRIKWidget(QMainWindow):
         
         # Update obstacle count label
         self.obstacle_count_label.setText(f"Obstacles: {len(self.obstacles)}")
+        
+        # Update config space viewer if open
+        if self.config_space_viewer is not None and self.config_space_viewer.isVisible():
+            self.config_space_viewer.update()
     
     def update_obstacle_plots(self):
         """Update obstacle visualization on plot"""
@@ -819,6 +834,28 @@ class FABRIKWidget(QMainWindow):
             radius = self.obstacle_radius_spin.value()
             new_obstacle = Obstacle(position=(x, y), radius=radius)
             self.obstacles.append(new_obstacle)
+            
+            # Sample configuration space for this obstacle using Monte Carlo
+            print(f"Sampling C-space for obstacle at ({x:.1f}, {y:.1f}) with radius {radius}")
+            collision_configs, non_collision_configs, neighbor_map = self.mc_sampler.sample_configuration_space(new_obstacle)
+            
+            # Store C-space obstacle data
+            cspace_data = {
+                'obstacle': new_obstacle,
+                'collision_configs': collision_configs,
+                'non_collision_configs': non_collision_configs,
+                'neighbor_map': neighbor_map,
+                'num_samples': len(collision_configs)
+            }
+            self.cspace_obstacles.append(cspace_data)
+            
+            print(f"Found {len(collision_configs)} collision configurations out of {self.mc_sampler.num_samples} samples")
+            print(f"Built neighbor map with {len(neighbor_map)} nodes")
+            
+            # Update config space viewer if open
+            if self.config_space_viewer is not None:
+                self.config_space_viewer.add_obstacle_region(cspace_data)
+            
             event.accept()
             return
         
@@ -920,6 +957,10 @@ class FABRIKWidget(QMainWindow):
         self.joints_spinbox.blockSignals(False)
         self.effector_spinbox.setMaximum(self.chain.num_joints - 1)
         self.effector_note_label.setText("0 = Base, " + str(self.chain.num_joints - 1) + " = Tip")
+        
+        # Update config space viewer if open
+        if self.config_space_viewer is not None and self.config_space_viewer.isVisible():
+            self.config_space_viewer.update_joint_count()
     
     def remove_joint(self):
         """Remove a joint from the chain"""
@@ -932,6 +973,10 @@ class FABRIKWidget(QMainWindow):
             self.chain.end_effector_index = self.chain.num_joints - 1
             self.effector_spinbox.setValue(self.chain.end_effector_index)
         self.effector_note_label.setText("0 = Base, " + str(self.chain.num_joints - 1) + " = Tip")
+        
+        # Update config space viewer if open
+        if self.config_space_viewer is not None and self.config_space_viewer.isVisible():
+            self.config_space_viewer.update_joint_count()
     
     def on_target_changed(self):
         """Handle target position change from spinboxes"""
@@ -993,6 +1038,15 @@ class FABRIKWidget(QMainWindow):
         dialog = JointAnglesDialog(self)
         dialog.exec()
     
+    def open_config_space_viewer(self):
+        """Open the configuration space viewer window"""
+        if self.config_space_viewer is None or not self.config_space_viewer.isVisible():
+            self.config_space_viewer = ConfigSpaceViewer(self.chain, self)
+            self.config_space_viewer.show()
+        else:
+            self.config_space_viewer.raise_()
+            self.config_space_viewer.activateWindow()
+    
     def toggle_path_drawing(self):
         """Toggle path drawing mode"""
         is_checked = self.draw_path_btn.isChecked()
@@ -1001,6 +1055,18 @@ class FABRIKWidget(QMainWindow):
             self.draw_path_btn.setText("Stop Drawing")
             self.path.stop_following()
             self.follow_path_btn.setChecked(False)
+            
+            # Turn off other modes
+            if self.obstacle_mode:
+                self.obstacle_mode = False
+                self.add_obstacle_btn.setChecked(False)
+                self.add_obstacle_btn.setText("Add Obstacle")
+            
+            if self.astar_mode:
+                self.astar_mode = False
+                self.astar_mode_btn.setChecked(False)
+                self.astar_mode_btn.setText("Enable A* Mode")
+                self.astar_status_label.setText("Status: Idle")
         else:
             self.path.stop_drawing()
             self.draw_path_btn.setText("Start Drawing")
@@ -1042,28 +1108,6 @@ class FABRIKWidget(QMainWindow):
                         # Directly set to target without interpolation
                         self.chain.joints = temp_chain.joints
                         print("Moving to first waypoint (no interpolation)...")
-                else:
-                    # Sub-chain case - only interpolate the sub-chain to end effector
-                    temp_chain = FABRIKChain(self.chain.base_position,
-                                            num_joints=self.chain.end_effector_index + 1,
-                                            obstacles=self.chain.obstacles)
-                    temp_chain.joints = self.chain.joints[:self.chain.end_effector_index + 1].copy()
-                    temp_chain.link_lengths = self.chain.link_lengths[:self.chain.end_effector_index]
-                    temp_chain.solve(first_waypoint)
-                    
-                    # For sub-chain, we need to create a full target_joints array
-                    # that includes the remaining joints in their current positions
-                    full_target_joints = self.chain.joints.copy()
-                    full_target_joints[:self.chain.end_effector_index + 1] = temp_chain.joints
-                    
-                    # Start interpolation (if enabled)
-                    if self.chain.enable_smooth_interpolation:
-                        self.chain.update_interpolation(poseA = self.chain.joints, poseB=full_target_joints)
-                        print("Starting interpolation to first waypoint...")
-                    else:
-                        # Directly set to target without interpolation
-                        self.chain.joints = full_target_joints
-                        print("Moving to first waypoint (no interpolation)...")
 
         else:
             self.path.stop_following()
@@ -1079,17 +1123,29 @@ class FABRIKWidget(QMainWindow):
         self.obstacle_mode = self.add_obstacle_btn.isChecked()
         if self.obstacle_mode:
             self.add_obstacle_btn.setText("Placing... (click to add)")
-            # Disable path drawing while in obstacle mode
+            
+            # Turn off other modes
             if self.path.is_drawing:
                 self.path.stop_drawing()
                 self.draw_path_btn.setChecked(False)
-                self.draw_path_btn.setText("Draw Path")
+                self.draw_path_btn.setText("Start Drawing")
+            
+            if self.astar_mode:
+                self.astar_mode = False
+                self.astar_mode_btn.setChecked(False)
+                self.astar_mode_btn.setText("Enable A* Mode")
+                self.astar_status_label.setText("Status: Idle")
         else:
             self.add_obstacle_btn.setText("Add Obstacle")
     
     def clear_obstacles(self):
         """Clear all obstacles"""
         self.obstacles.clear()
+        self.cspace_obstacles.clear()
+        
+        # Clear obstacle regions from config viewer if open
+        if self.config_space_viewer is not None:
+            self.config_space_viewer.clear_obstacle_regions()
     
     def on_speed_changed(self, value):
         """Handle path speed change"""
@@ -1131,6 +1187,11 @@ class FABRIKWidget(QMainWindow):
     def on_interp_speed_changed(self, value):
         """Handle interpolation speed change"""
         self.chain.interpolation_speed = value
+    
+    def on_ik_method_changed(self, method):
+        """Handle IK method change"""
+        self.chain.set_ik_method(method)
+        print(f"IK Method changed to: {method}")
     
     def toggle_astar_mode(self):
         """Toggle A* pathfinding mode"""

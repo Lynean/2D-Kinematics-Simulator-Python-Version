@@ -86,15 +86,22 @@ class JointConfigDialog(QDialog):
             self.table.setItem(i, 2, y_item)
             
             # Angle limits (convert from radians to degrees)
-            min_angle_rad, max_angle_rad = self.chain.angle_limits[i]
-            min_angle_deg = np.degrees(min_angle_rad)
-            max_angle_deg = np.degrees(max_angle_rad)
-            
-            min_item = QTableWidgetItem(f"{min_angle_deg:.1f}")
-            max_item = QTableWidgetItem(f"{max_angle_deg:.1f}")
-            
-            # All joints now have editable angle constraints (including base)
-            # Base joint (index 0) controls the first link's angle from horizontal
+            # Last joint (end effector) has no angle limits - it has no outgoing link
+            if i == self.chain.num_joints - 1:
+                min_item = QTableWidgetItem("N/A")
+                max_item = QTableWidgetItem("N/A")
+                min_item.setFlags(min_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                max_item.setFlags(max_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            else:
+                min_angle_rad, max_angle_rad = self.chain.angle_limits[i]
+                min_angle_deg = np.degrees(min_angle_rad)
+                max_angle_deg = np.degrees(max_angle_rad)
+                
+                min_item = QTableWidgetItem(f"{min_angle_deg:.1f}")
+                max_item = QTableWidgetItem(f"{max_angle_deg:.1f}")
+                
+                # All joints (except last) now have editable angle constraints
+                # Base joint (index 0) controls the first link's angle from horizontal
             
             self.table.setItem(i, 3, min_item)
             self.table.setItem(i, 4, max_item)
@@ -124,10 +131,17 @@ class JointConfigDialog(QDialog):
             self.chain.total_length = sum(self.chain.link_lengths)
             
             # Update angle limits (convert from degrees to radians)
-            # Now includes base joint (index 0) which controls first link angle
-            for i in range(self.chain.num_joints):
-                min_deg = float(self.table.item(i, 3).text())
-                max_deg = float(self.table.item(i, 4).text())
+            # Skip last joint (end effector) - it has no angle
+            for i in range(self.chain.num_joints - 1):
+                min_text = self.table.item(i, 3).text()
+                max_text = self.table.item(i, 4).text()
+                
+                # Skip if N/A
+                if min_text == "N/A" or max_text == "N/A":
+                    continue
+                
+                min_deg = float(min_text)
+                max_deg = float(max_text)
                 
                 # Validate angle range
                 if min_deg >= max_deg:
@@ -212,11 +226,19 @@ class JointAnglesDialog(QDialog):
             joint_item.setFlags(joint_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(i, 0, joint_item)
             
-            if i == 0:
-                # Base joint - show absolute angle
-                if chain.num_joints > 1:
-                    direction = chain.joints[1] - chain.joints[0]
-                    angle = np.arctan2(direction[1], direction[0])
+            # Last joint (end effector) has no angle - it has no outgoing link
+            if i == chain.num_joints - 1:
+                abs_angle_item = QTableWidgetItem("N/A")
+                abs_angle_item.setFlags(abs_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(i, 1, abs_angle_item)
+                
+                rel_angle_item = QTableWidgetItem("N/A")
+                rel_angle_item.setFlags(rel_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(i, 2, rel_angle_item)
+            elif i == 0:
+                # Base joint - show absolute angle of first link from cached angles
+                if chain.num_joints > 1 and len(chain.joint_angles) > 0:
+                    angle = chain.joint_angles[0]
                     abs_angle_item = QTableWidgetItem(f"{np.degrees(angle):.1f}")
                     abs_angle_item.setFlags(abs_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self.table.setItem(i, 1, abs_angle_item)
@@ -225,24 +247,20 @@ class JointAnglesDialog(QDialog):
                     rel_angle_item.setFlags(rel_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self.table.setItem(i, 2, rel_angle_item)
             else:
-                # Calculate absolute angle
-                direction = chain.joints[i] - chain.joints[i-1]
-                angle = np.arctan2(direction[1], direction[0])
-                abs_angle_item = QTableWidgetItem(f"{np.degrees(angle):.1f}")
-                abs_angle_item.setFlags(abs_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(i, 1, abs_angle_item)
-                
-                # Calculate relative angle to previous link
-                if i > 1:
-                    prev_direction = chain.joints[i-1] - chain.joints[i-2]
-                    prev_angle = np.arctan2(prev_direction[1], prev_direction[0])
-                    relative_angle = angle - prev_angle
-                    # Normalize to [-180, 180]
-                    relative_angle = np.arctan2(np.sin(relative_angle), np.cos(relative_angle))
-                    rel_angle_item = QTableWidgetItem(f"{np.degrees(relative_angle):.1f}")
-                else:
-                    rel_angle_item = QTableWidgetItem("N/A")
-                
-                rel_angle_item.setFlags(rel_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.table.setItem(i, 2, rel_angle_item)
+                # Middle joints - show angle of link starting from this joint from cached angles
+                if i < chain.num_joints - 1 and i < len(chain.joint_angles):
+                    angle = chain.joint_angles[i]
+                    abs_angle_item = QTableWidgetItem(f"{np.degrees(angle):.1f}")
+                    abs_angle_item.setFlags(abs_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.table.setItem(i, 1, abs_angle_item)
+                    
+                    # Calculate relative angle to previous link using cached angles
+                    if i > 0:
+                        prev_angle = chain.joint_angles[i-1]
+                        relative_angle = angle - prev_angle
+                        # Normalize to [-180, 180]
+                        relative_angle = np.arctan2(np.sin(relative_angle), np.cos(relative_angle))
+                        rel_angle_item = QTableWidgetItem(f"{np.degrees(relative_angle):.1f}")
+                        rel_angle_item.setFlags(rel_angle_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                        self.table.setItem(i, 2, rel_angle_item)
 

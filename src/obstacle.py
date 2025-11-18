@@ -21,6 +21,11 @@ class Obstacle:
         distance = np.linalg.norm(point - self.position)
         return distance <= self.collision_radius
     
+    def is_point_inside_warning(self, point):
+        """Check if point is inside warning circle"""
+        distance = np.linalg.norm(point - self.position)
+        return distance <= self.radius
+
     def get_nearest_boundary_point(self, point):
         """Get nearest point on collision boundary"""
         to_point = point - self.position
