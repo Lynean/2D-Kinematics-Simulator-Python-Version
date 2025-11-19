@@ -6,9 +6,9 @@ import pyqtgraph as pg
 import numpy as np
 
 from src.chain import FABRIKChain
-from src.config_space_viewer import ConfigSpaceViewer
+from App.config_space_viewer import ConfigSpaceViewer
 from src.obstacle import Obstacle
-from src.monte_carlo import MonteCarloSampler
+from Tools.monte_carlo import MonteCarloSampler
 
 class FABRIKWidget(QMainWindow):
     """Main application window for FABRIK simulator"""

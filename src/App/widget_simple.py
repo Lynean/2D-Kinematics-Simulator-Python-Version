@@ -11,6 +11,7 @@ from src.App.config_space_viewer import ConfigSpaceViewer
 from src.obstacle import Obstacle
 from src.Tools.monte_carlo import MonteCarloSampler
 from src.Tools.grid_sampler import GridSampler
+from src.serial_transmitter import SerialTransmitter, ChainSerialBridge
 
 class FABRIKWidget(QMainWindow):
     """Simplified FABRIK simulator - Main features only"""
@@ -32,8 +33,10 @@ class FABRIKWidget(QMainWindow):
         self.mc_sampler = MonteCarloSampler(self.chain, num_samples=1000)
         self.grid_sampler = GridSampler(self.chain, grid_resolution=5)
         self.current_sampler = self.mc_sampler  # Default to Monte Carlo
-        self.mc_sampler = MonteCarloSampler(self.chain, num_samples=1000)
         
+        # Serial communication
+        self.serial_transmitter = SerialTransmitter()
+        self.serial_bridge = ChainSerialBridge(self.chain, self.serial_transmitter)
         # Interaction state
         self.show_reach_circle = True
         self.auto_solve = True
@@ -293,6 +296,47 @@ class FABRIKWidget(QMainWindow):
         instructions.setWordWrap(True)
         instructions.setStyleSheet("font-size: 9pt; padding: 5px;")
         layout.addWidget(instructions)
+        
+        # Arduino Serial
+        serial_group = QGroupBox("Arduino Serial")
+        serial_layout = QVBoxLayout()
+        
+        port_layout = QHBoxLayout()
+        port_layout.addWidget(QLabel("Port:"))
+        self.serial_port_combo = QComboBox()
+        self.serial_port_combo.setMinimumWidth(100)
+        port_layout.addWidget(self.serial_port_combo)
+        
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setMaximumWidth(30)
+        refresh_btn.clicked.connect(self.refresh_serial_ports)
+        port_layout.addWidget(refresh_btn)
+        serial_layout.addLayout(port_layout)
+        
+        self.serial_connect_btn = QPushButton("Connect")
+        self.serial_connect_btn.setCheckable(True)
+        self.serial_connect_btn.clicked.connect(self.toggle_serial_connection)
+        serial_layout.addWidget(self.serial_connect_btn)
+        
+        self.serial_auto_send_checkbox = QCheckBox("Auto-send angles")
+        self.serial_auto_send_checkbox.setToolTip("Automatically send joint angles when they change")
+        self.serial_auto_send_checkbox.stateChanged.connect(self.on_serial_auto_send_changed)
+        serial_layout.addWidget(self.serial_auto_send_checkbox)
+        
+        self.serial_send_btn = QPushButton("Send Angles Now")
+        self.serial_send_btn.clicked.connect(self.send_angles_now)
+        self.serial_send_btn.setEnabled(False)
+        serial_layout.addWidget(self.serial_send_btn)
+        
+        self.serial_status_label = QLabel("Not connected")
+        self.serial_status_label.setStyleSheet("font-size: 9pt; color: gray;")
+        serial_layout.addWidget(self.serial_status_label)
+        
+        serial_group.setLayout(serial_layout)
+        layout.addWidget(serial_group)
+        
+        # Populate serial ports
+        self.refresh_serial_ports()
         
         layout.addStretch()
         return panel
@@ -568,6 +612,9 @@ class FABRIKWidget(QMainWindow):
         # Update config space viewer
         if self.config_space_viewer and self.config_space_viewer.isVisible():
             self.config_space_viewer.update()
+        
+        # Update serial bridge (auto-send if enabled)
+        self.serial_bridge.update()
     
     def update_angle_limits_visualization(self):
         """Update visual representation of joint angle limits"""
@@ -617,7 +664,66 @@ class FABRIKWidget(QMainWindow):
             arc_y = joint_pos[1] + arc_radius * np.sin(angles)
             
             self.angle_limit_arcs[i].setData(arc_x, arc_y)
-
+    # Serial communication methods
+    def refresh_serial_ports(self):
+        """Refresh the list of available serial ports"""
+        self.serial_port_combo.clear()
+        ports = self.serial_transmitter.list_available_ports()
+        
+        if ports:
+            for port, desc in ports:
+                self.serial_port_combo.addItem(f"{port} - {desc}", port)
+        else:
+            self.serial_port_combo.addItem("No ports found", None)
+    def toggle_serial_connection(self):
+        """Connect or disconnect from serial port"""
+        if self.serial_connect_btn.isChecked():
+            # Try to connect
+            port_data = self.serial_port_combo.currentData()
+            if port_data:
+                if self.serial_transmitter.connect(port_data):
+                    self.serial_connect_btn.setText("Disconnect")
+                    self.serial_send_btn.setEnabled(True)
+                    self.serial_status_label.setText(f"Connected to {port_data}")
+                    self.serial_status_label.setStyleSheet("font-size: 9pt; color: green;")
+                else:
+                    self.serial_connect_btn.setChecked(False)
+                    self.serial_status_label.setText("Connection failed")
+                    self.serial_status_label.setStyleSheet("font-size: 9pt; color: red;")
+            else:
+                self.serial_connect_btn.setChecked(False)
+                self.serial_status_label.setText("No port selected")
+                self.serial_status_label.setStyleSheet("font-size: 9pt; color: red;")
+        else:
+            # Disconnect
+            self.serial_transmitter.disconnect()
+            self.serial_connect_btn.setText("Connect")
+            self.serial_send_btn.setEnabled(False)
+            self.serial_auto_send_checkbox.setChecked(False)
+            self.serial_status_label.setText("Not connected")
+            self.serial_status_label.setStyleSheet("font-size: 9pt; color: gray;")
+    
+    def on_serial_auto_send_changed(self, state):
+        """Handle auto-send checkbox state change"""
+        self.serial_bridge.enable_auto_send(state == Qt.CheckState.Checked.value)
+        if state == Qt.CheckState.Checked.value:
+            self.serial_status_label.setText(f"Auto-sending to {self.serial_transmitter.port_name}")
+            self.serial_status_label.setStyleSheet("font-size: 9pt; color: blue;")
+        elif self.serial_transmitter.is_connected:
+            self.serial_status_label.setText(f"Connected to {self.serial_transmitter.port_name}")
+            self.serial_status_label.setStyleSheet("font-size: 9pt; color: green;")
+    
+    def send_angles_now(self):
+        """Manually send current joint angles"""
+        angles = self.chain.get_joint_angles()
+        if self.serial_transmitter.send_angles(angles):
+            # Convert radians to degrees for display
+            angles_deg = np.degrees(angles)
+            self.serial_status_label.setText(f"Sent: {[f'{a:.1f}°' for a in angles_deg]}")
+            self.serial_status_label.setStyleSheet("font-size: 9pt; color: green;")
+        else:
+            self.serial_status_label.setText("Send failed")
+            self.serial_status_label.setStyleSheet("font-size: 9pt; color: red;")
 
 class JointLimitsDialog(QDialog):
     """Dialog for configuring joint angle limits"""
@@ -744,7 +850,8 @@ class JointLimitsDialog(QDialog):
         """Apply limits and close dialog"""
         self.apply_limits()
         self.accept()
-
+    
+    
 
 def main():
     app = QApplication([])
