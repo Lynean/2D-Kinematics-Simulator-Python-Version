@@ -7,7 +7,7 @@ Features:
 - Visual feedback
 """
 import sys
-from widget import FABRIKWidget
+from src.App.widget import FABRIKWidget
 from PyQt6.QtWidgets import QApplication
 
 

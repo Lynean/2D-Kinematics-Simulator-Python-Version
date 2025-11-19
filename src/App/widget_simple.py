@@ -7,10 +7,10 @@ import pyqtgraph as pg
 import numpy as np
 
 from src.chain import FABRIKChain
-from src.config_space_viewer import ConfigSpaceViewer
+from src.App.config_space_viewer import ConfigSpaceViewer
 from src.obstacle import Obstacle
-from src.monte_carlo import MonteCarloSampler
-from src.grid_sampler import GridSampler
+from src.Tools.monte_carlo import MonteCarloSampler
+from src.Tools.grid_sampler import GridSampler
 
 class FABRIKWidget(QMainWindow):
     """Simplified FABRIK simulator - Main features only"""
@@ -30,7 +30,7 @@ class FABRIKWidget(QMainWindow):
         
         # Samplers
         self.mc_sampler = MonteCarloSampler(self.chain, num_samples=1000)
-        self.grid_sampler = GridSampler(self.chain, grid_resolution=10)
+        self.grid_sampler = GridSampler(self.chain, grid_resolution=5)
         self.current_sampler = self.mc_sampler  # Default to Monte Carlo
         self.mc_sampler = MonteCarloSampler(self.chain, num_samples=1000)
         

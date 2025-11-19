@@ -12,7 +12,7 @@ class GridSampler:
     Uses uniform grid sampling with collision zone expansion
     """
     
-    def __init__(self, chain, grid_resolution=10):
+    def __init__(self, chain, grid_resolution=5):
         """
         Initialize Grid sampler
         
@@ -39,6 +39,10 @@ class GridSampler:
         # Get joint angle limits
         num_joints = self.chain.num_joints - 1  # Exclude end effector
         
+        # Add current chain configuration as a non-collision point
+        current_config = self.chain.get_joint_angles()
+        current_end_pos = self.chain.joints[-1].copy()
+        
         # Create grid samples
         grid_samples = self._create_grid_samples(num_joints)
         
@@ -47,6 +51,12 @@ class GridSampler:
         non_collision_configs = []
         non_collision_end_positions = []
         collision_indices = []
+        
+        # Add current configuration first (if not in collision)
+        current_positions = self.chain.joints.copy()
+        if not self.chain.detect_collisions(current_positions):
+            non_collision_configs.append(current_config)
+            non_collision_end_positions.append(current_end_pos)
         
         for idx, angles in enumerate(grid_samples):
             # Convert angles to positions
@@ -72,26 +82,33 @@ class GridSampler:
         non_collision_configs_filtered = []
         non_collision_end_positions_filtered = []
         
-        expanded_set = set(expanded_collision_indices)
-        non_collision_idx = 0
+        # Keep current configuration (index 0)
+        if len(non_collision_configs) > 0 and not self.chain.detect_collisions(current_positions):
+            non_collision_configs_filtered.append(non_collision_configs[0])
+            non_collision_end_positions_filtered.append(non_collision_end_positions[0])
         
+        expanded_set = set(expanded_collision_indices)
+        
+        # Start from index 1 since we already added current config
         for idx, angles in enumerate(grid_samples):
             if idx not in expanded_set and idx not in collision_indices:
-                if non_collision_idx < len(non_collision_configs):
-                    if np.allclose(angles, non_collision_configs[non_collision_idx]):
-                        non_collision_configs_filtered.append(angles)
-                        non_collision_end_positions_filtered.append(non_collision_end_positions[non_collision_idx])
-                        non_collision_idx += 1
+                # Find this config in non_collision_configs (skip index 0 which is current)
+                for nc_idx in range(1, len(non_collision_configs)):
+                    if np.allclose(angles, non_collision_configs[nc_idx]):
+                        non_collision_configs_filtered.append(non_collision_configs[nc_idx])
+                        non_collision_end_positions_filtered.append(non_collision_end_positions[nc_idx])
+                        break
         
-        # Combine original and expanded collisions
+        # Combine original and expanded collisions (for visualization)
         all_collision_configs = collision_configs + expanded_collision_configs
         
-        # Build neighbor map
+        # Build neighbor map (only for non-collision configs)
         neighbor_map = self._build_neighbor_map(non_collision_configs_filtered, radius=np.radians(8.0))
         endpos_map = {i: end_pos for i, end_pos in enumerate(non_collision_end_positions_filtered)}
         
-        print(f"Grid sampling: {len(grid_samples)} total, {len(collision_configs)} collisions, "
-              f"{len(expanded_collision_configs)} expanded, {len(non_collision_configs_filtered)} free")
+        print(f"Grid sampling: {len(grid_samples)} grid points, {len(collision_configs)} initial collisions, "
+              f"{len(expanded_collision_configs)} expanded collisions, {len(non_collision_configs_filtered)} free (including current)")
+        print(f"Neighbor map has {len(neighbor_map)} nodes, endpos_map has {len(endpos_map)} entries")
         
         return all_collision_configs, non_collision_configs_filtered, neighbor_map, endpos_map
     
@@ -158,11 +175,17 @@ class GridSampler:
         expanded_collision_configs = []
         expanded_collision_indices = set()
         
-        # Get grid step size for each joint
+        # Get grid step size for each joint (actual step used in grid creation)
         grid_steps = []
         for i in range(num_joints):
             min_angle, max_angle = self.chain.angle_limits[i]
-            step = (max_angle - min_angle) / (self.grid_resolution - 1)
+            angle_range_degrees = np.degrees(max_angle - min_angle)
+            num_steps = int(angle_range_degrees / (self.grid_resolution*2)) + 1
+            # Calculate actual step size
+            if num_steps > 1:
+                step = (max_angle - min_angle) / (num_steps - 1)
+            else:
+                step = 0
             grid_steps.append(step)
         
         # For each collision point, expand in appropriate directions
@@ -179,7 +202,7 @@ class GridSampler:
                     np.array([0, -grid_steps[1]])
                 ]
             elif num_joints == 3:
-                # 8 directions: all combinations of ±1 for each joint (excluding [0,0,0])
+                # 26 directions: all combinations of ±1 for each joint (excluding [0,0,0])
                 offsets = []
                 for i in [-1, 0, 1]:
                     for j in [-1, 0, 1]:
@@ -203,6 +226,7 @@ class GridSampler:
                     offsets.append(offset_neg)
             
             # Check each neighbor
+            neighbors_found = 0
             for offset in offsets:
                 neighbor_config = col_config + offset
                 
@@ -217,11 +241,15 @@ class GridSampler:
                 if within_bounds:
                     # Find if this neighbor exists in grid_samples
                     for idx, sample in enumerate(grid_samples):
-                        if np.allclose(sample, neighbor_config, atol=1e-6):
+                        if np.allclose(sample, neighbor_config, atol=1e-4):
                             if idx not in collision_indices and idx not in expanded_collision_indices:
-                                expanded_collision_configs.append(neighbor_config)
+                                expanded_collision_configs.append(neighbor_config.copy())
                                 expanded_collision_indices.add(idx)
+                                neighbors_found += 1
                             break
+        
+        print(f"Expansion: checked {len(collision_indices)} collision points, "
+              f"found {len(expanded_collision_indices)} neighbors to expand")
         
         return expanded_collision_configs, list(expanded_collision_indices)
     

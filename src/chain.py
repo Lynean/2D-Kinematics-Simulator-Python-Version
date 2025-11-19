@@ -4,11 +4,11 @@ Uses motion queue system and delegates math to usermath.py
 """
 
 import numpy as np
-from src.ik_fabrik import solve_fabrik
-from src.ik_ccd import solve_ccd
-from src import usermath
-from src.astar import AStarPathfinder
-from src.monte_carlo import MonteCarloSampler
+from src.Solvers.ik_fabrik import solve_fabrik
+from src.Solvers.ik_ccd import solve_ccd
+from src.Tools import usermath
+from src.Tools.astar import AStarPathfinder
+from src.Tools.monte_carlo import MonteCarloSampler
 
 
 class FABRIKChain:
